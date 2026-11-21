@@ -2,6 +2,7 @@
 // fetches the session's full message history from the host and hands it
 // here, so the report and the sidebar always agree (same history, same
 // math) and the numbers survive OpenCode restarts and resumed sessions.
+import type { Factors } from "./co2-factors.ts"
 import {
   addModelTokens,
   aggregateTokensByModel,
@@ -68,8 +69,8 @@ export interface ReportData {
 
 // Raw-data report, also the `export: "json"` contract: numbers stay
 // unformatted (no toFixed/locale strings), callers format as they see fit.
-export function buildReportData(stats: SessionStats, gridIntensityGco2PerKwh: number): ReportData {
-  const breakdown = computeModelEnergyBreakdown(stats.tokensByModel)
+export function buildReportData(stats: SessionStats, gridIntensityGco2PerKwh: number, factors: Factors): ReportData {
+  const breakdown = computeModelEnergyBreakdown(stats.tokensByModel, factors)
   const energyKwh = sumEnergyKwh(breakdown)
   const co2Grams = energyKwh * gridIntensityGco2PerKwh
   const grade = getEcoGrade(co2Grams, stats.messages)
@@ -142,11 +143,9 @@ export function formatReport(data: ReportData): string {
     ``,
     `| Equivalent | Amount |`,
     `|---|---|`,
-    `| Google searches | ~${eq.googleSearches.toFixed(1)} |`,
-    `| Seconds of video streaming | ~${eq.videoStreamSeconds.toFixed(1)} |`,
     `| Smartphone charges | ~${eq.phoneCharges.toFixed(3)} |`,
     `| Minutes of a 10W LED bulb | ~${eq.ledBulbMinutes.toFixed(1)} |`,
-    `| km driven (EU avg car) | ~${eq.kmDriven.toFixed(5)} |`,
+    `| km driven (world avg car) | ~${eq.kmDriven.toFixed(5)} |`,
     ``,
     `### Token Breakdown`,
     ``,
@@ -166,7 +165,7 @@ export function formatReport(data: ReportData): string {
     ``,
     `> **Tip:** ${data.tip}`,
     ``,
-    "*Estimates based on Luccioni et al. (2023). Actual values vary by hardware, data center, and region. " +
-      "Configure grid intensity with `OPENCODE_CO2_GRID_INTENSITY` env var.*",
+    "*Estimates follow the claude-carbon methodology, fitted on Jegham et al. (2025) -- see METHODOLOGY.md for sources and limits. " +
+      "Configure grid intensity with `OPENCODE_CO2_GRID_INTENSITY` and the cache-read factor with `OPENCODE_CO2_CACHE_READ_FACTOR`.*",
   ].join("\n")
 }

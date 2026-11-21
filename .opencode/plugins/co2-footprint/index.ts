@@ -9,6 +9,7 @@ import { Plugin } from "@opencode/plugin"
 import { writeFile } from "node:fs/promises"
 import path from "node:path"
 import { getGridIntensity, type UsageMessage } from "./lib/co2-core.ts"
+import { loadFactors } from "./lib/co2-factors.ts"
 import { buildReportData, buildSessionStats, formatReport } from "./lib/co2-report.ts"
 
 const NO_DATA_MESSAGE =
@@ -60,7 +61,7 @@ export default Plugin.define({
           const stats = buildSessionStats([...response].map(usage))
           if (stats.messages === 0) return { content: NO_DATA_MESSAGE }
 
-          const data = buildReportData(stats, getGridIntensity())
+          const data = buildReportData(stats, getGridIntensity(), loadFactors())
           const report = formatReport(data)
           if (!exportArg) return { content: report }
 

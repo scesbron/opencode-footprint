@@ -1,6 +1,7 @@
 // Pure logic backing the TUI sidebar panel (tui.tsx). Kept in its own plain
 // .ts module (no JSX) so it can be unit tested directly. The component only
 // renders precomputed strings from here.
+import type { Factors } from "./co2-factors.ts"
 import {
   aggregateTokensByModel,
   computeModelEnergyBreakdown,
@@ -21,8 +22,9 @@ export interface SessionCo2Summary {
 export function computeSessionCo2(
   messages: readonly (UsageMessage | null | undefined)[],
   gridIntensityGco2PerKwh: number,
+  factors: Factors,
 ): SessionCo2Summary {
-  const energyKwh = sumEnergyKwh(computeModelEnergyBreakdown(aggregateTokensByModel(messages)))
+  const energyKwh = sumEnergyKwh(computeModelEnergyBreakdown(aggregateTokensByModel(messages), factors))
   const co2Grams = energyKwh * gridIntensityGco2PerKwh
   const assistantMessages = countAssistantMessages(messages)
   const grade = getEcoGrade(co2Grams, assistantMessages)

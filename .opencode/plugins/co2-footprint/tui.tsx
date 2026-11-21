@@ -10,11 +10,14 @@ import {
   summarizeLifetime,
   type LifetimeSessionTotal,
 } from "./lib/co2-core.ts"
+import { lifetimeStorageKey, loadFactors } from "./lib/co2-factors.ts"
 import { computeSessionCo2, formatLifetimeLine, formatSessionLine } from "./lib/co2-sidebar-logic.ts"
 
 type TuiContext = Plugin.Context
 
-const STORAGE_KEY = "co2.lifetime.sessions"
+// Versioned with the factors: bump factors.json's version and the all-time
+// total starts fresh instead of mixing grams computed with old factors.
+const STORAGE_KEY = lifetimeStorageKey(loadFactors())
 
 function Footer(props: { context: TuiContext; sessionID: string }) {
   const context = props.context
@@ -26,7 +29,11 @@ function Footer(props: { context: TuiContext; sessionID: string }) {
   void context.data.session.message.sync(props.sessionID)
 
   const session = createMemo(() =>
-    computeSessionCo2(context.data.session.message.list(props.sessionID), getGridIntensity()),
+    computeSessionCo2(
+      context.data.session.message.list(props.sessionID),
+      getGridIntensity(),
+      loadFactors(),
+    ),
   )
 
   // Upsert this session's running total (never accumulate a delta): repeated

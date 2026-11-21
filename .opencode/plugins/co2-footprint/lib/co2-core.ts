@@ -5,48 +5,18 @@
 // ---------------------------------------------------------------------------
 // CO2 emission model
 // ---------------------------------------------------------------------------
-// Energy estimates (kWh per token) based on published research:
-//   - Luccioni et al. "Power Hungry Processing" (2023)
-//   - IEA global average grid carbon intensity: ~400 gCO2/kWh
-//   - PUE ~1.1 for hyperscale data centers
+// Energy factors live in factors.json (see co2-factors.ts): Wh per million
+// tokens, PUE included, per model family and token kind. The per-kind
+// weighting follows the claude-carbon methodology, fitted on Jegham et al.
+// "How Hungry is AI?" (2025, arXiv:2505.09598) -- see METHODOLOGY.md for
+// sources, uncertainty bands and limits.
 //
 // These are rough estimates. Real values depend on hardware, data center
 // location, cooling, and model architecture. Users can override the grid
-// carbon intensity via the OPENCODE_CO2_GRID_INTENSITY env var.
-//
-// Tokens are tracked per model so a session that mixes small and large
-// models bills each model's tokens at that model's own energy factor, then
-// sums across models, rather than billing every token in the session at one
-// "dominant" model's rate.
+// carbon intensity via OPENCODE_CO2_GRID_INTENSITY and the cache-read factor
+// via OPENCODE_CO2_CACHE_READ_FACTOR.
 // ---------------------------------------------------------------------------
-
-export type ModelSize = "small" | "medium" | "large"
-
-// Power Usage Effectiveness for hyperscale data centers: total facility
-// energy / IT equipment energy. Applied on top of the raw per-token energy
-// estimate to account for cooling, power distribution, etc.
-export const PUE = 1.1
-
-// Exceptions to the token rules in classifyModel(). Only models whose family
-// markers would classify them wrongly need an entry here. An entry matches the
-// bare name and its dash-suffixed variants ("o4-mini-high", "o3-mini-2025-01-31").
-const MODEL_SIZE: Readonly<Record<string, ModelSize>> = {
-  // OpenAI reasoning minis are mid-sized despite the "mini" marker.
-  "o3-mini": "medium",
-  "o4-mini": "medium",
-}
-
-// Family markers, matched against whole id segments (never substrings: the
-// "mini" in "gemini" must not make every Gemini model small).
-const SMALL_MARKERS: ReadonlySet<string> = new Set(["haiku", "mini", "nano", "flash", "lite"])
-const LARGE_MARKERS: ReadonlySet<string> = new Set(["opus", "o3"])
-
-// kWh per single token (input+output averaged), by model class
-export const ENERGY_PER_TOKEN_KWH: Readonly<Record<ModelSize, number>> = {
-  small: 0.0000003, //  0.3 Wh / 1k tokens
-  medium: 0.000001, //  1.0 Wh / 1k tokens
-  large: 0.000003, //  3.0 Wh / 1k tokens
-}
+import { getCacheReadFactor, resolveModelFactors, type Factors } from "./co2-factors.ts"
 
 // Default grid carbon intensity (gCO2 per kWh).
 // Global average ≈ 400. Override with OPENCODE_CO2_GRID_INTENSITY.
@@ -61,23 +31,6 @@ export function getGridIntensity(env: NodeJS.ProcessEnv = process.env): number {
   return DEFAULT_GRID_INTENSITY
 }
 
-// Model ids arrive in many shapes: bare ("claude-opus-4-5"), provider
-// prefixed ("openrouter/google/gemini-2.5-pro"), or vendor qualified
-// ("anthropic.claude-haiku-4-5-20251001-v1:0"). Keep the last path segment
-// for the exceptions table, and split everything on separators for markers.
-export function classifyModel(modelID: string): ModelSize {
-  const id = modelID.toLowerCase()
-  const name = id.slice(id.lastIndexOf("/") + 1)
-  const exception = Object.entries(MODEL_SIZE).find(
-    ([key]) => name === key || name.startsWith(`${key}-`),
-  )
-  if (exception) return exception[1]
-  const segments = id.split(/[-/._:@\s]+/)
-  if (segments.some((s) => SMALL_MARKERS.has(s))) return "small"
-  if (segments.some((s) => LARGE_MARKERS.has(s))) return "large"
-  return "medium"
-}
-
 // ---------------------------------------------------------------------------
 // Eco scoring: assigns a letter grade based on CO2 per message
 // ---------------------------------------------------------------------------
@@ -89,29 +42,33 @@ export interface EcoGrade {
   tip: string
 }
 
+// Calibrated for the per-kind energy model: a cache-heavy agentic session
+// lands ~75x lower than under the old flat rates, so the scale moves with it
+// (values are the old thresholds divided by ten, locked by the golden
+// vectors).
 const ECO_THRESHOLDS: readonly { maxPerMsg: number; grade: EcoGrade }[] = [
   {
-    maxPerMsg: 0.1,
+    maxPerMsg: 0.01,
     grade: { grade: "A+", label: "Exemplary", level: 1, tip: "Your session is incredibly efficient. Keep it up!" },
   },
   {
-    maxPerMsg: 0.3,
+    maxPerMsg: 0.03,
     grade: { grade: "A", label: "Excellent", level: 2, tip: "Great efficiency! Small models and focused prompts pay off." },
   },
   {
-    maxPerMsg: 0.8,
+    maxPerMsg: 0.08,
     grade: { grade: "B", label: "Good", level: 3, tip: "Solid session. Consider using smaller models for simpler tasks." },
   },
   {
-    maxPerMsg: 1.5,
+    maxPerMsg: 0.15,
     grade: { grade: "B-", label: "Above Average", level: 4, tip: "Not bad! Try batching questions to reduce message overhead." },
   },
   {
-    maxPerMsg: 3.0,
+    maxPerMsg: 0.3,
     grade: { grade: "C", label: "Moderate", level: 6, tip: "Consider using a smaller model for routine tasks to cut emissions." },
   },
   {
-    maxPerMsg: 6.0,
+    maxPerMsg: 0.6,
     grade: {
       grade: "D",
       label: "High Impact",
@@ -239,21 +196,27 @@ export interface ModelEnergyBreakdown {
   energyKwh: number
 }
 
-// Total billable tokens for one model: input + output + reasoning + cache.
-// Cache read/write tokens are billed at the same per-token factor as
-// regular tokens, a simplification: in reality cache reads are much cheaper
-// (no full forward pass), but no published per-token rate exists for cache
-// tokens specifically, so we fold them into the same estimate.
-function billableTokens(tokens: ModelTokens): number {
-  return tokens.input + tokens.output + tokens.reasoning + tokens.cacheRead + tokens.cacheWrite
-}
-
-// Per-model energy breakdown, with PUE already applied to each line so the
-// lines sum exactly to the session total.
-export function computeModelEnergyBreakdown(tokensByModel: ReadonlyMap<string, ModelTokens>): ModelEnergyBreakdown[] {
+// Per-model energy: (input + cacheWrite) * input factor (a cache write is a
+// full prefill), cacheRead * input factor * cacheReadFactor (the prefill
+// residual a reused prefix still pays), and (output + reasoning) * output
+// factor (decoding is memory-bandwidth-bound, ~21x an input token for the
+// sonnet class). Factors are Wh/Mtok with PUE included, so no separate PUE
+// multiplier applies. Energy model from Jegham et al. 2025 via the
+// claude-carbon methodology; see METHODOLOGY.md for sources and limits.
+export function computeModelEnergyBreakdown(
+  tokensByModel: ReadonlyMap<string, ModelTokens>,
+  factors: Factors,
+  cacheReadFactor = getCacheReadFactor(),
+): ModelEnergyBreakdown[] {
   return [...tokensByModel.entries()].map(([modelID, tokens]) => {
-    const total = billableTokens(tokens)
-    return { modelID, tokens: total, energyKwh: total * ENERGY_PER_TOKEN_KWH[classifyModel(modelID)] * PUE }
+    const resolved = resolveModelFactors(modelID, factors)
+    const wh =
+      ((tokens.input + tokens.cacheWrite) * resolved.input +
+        tokens.cacheRead * resolved.input * cacheReadFactor +
+        (tokens.output + tokens.reasoning) * resolved.output) /
+      1e6
+    const total = tokens.input + tokens.output + tokens.reasoning + tokens.cacheRead + tokens.cacheWrite
+    return { modelID, tokens: total, energyKwh: wh / 1000 }
   })
 }
 
@@ -266,8 +229,6 @@ export function sumEnergyKwh(breakdown: readonly ModelEnergyBreakdown[]): number
 // ---------------------------------------------------------------------------
 
 export interface Equivalents {
-  googleSearches: number
-  videoStreamSeconds: number
   phoneCharges: number
   ledBulbMinutes: number
   kmDriven: number
@@ -276,16 +237,22 @@ export interface Equivalents {
 // A 10W LED bulb draws 10 Wh per hour, i.e. 10/60 Wh per minute.
 const LED_BULB_WH_PER_MINUTE = 10 / 60
 
+// Smartphone charge: EPA's published per-charge energy (0.019 kWh) at the
+// world grid intensity (Ember 2025, 458 gCO2/kWh) = 8.7 gCO2e per charge.
+const PHONE_CHARGE_GCO2 = 8.7
+
+// World-average car, real-world estimate: GFEI/IEA 167 gCO2/km rated, plus
+// the ~20% on-road gap, = 200 gCO2/km.
+const CAR_GCO2_PER_KM = 200
+
 // CO2-denominated equivalents scale with the grid intensity. The LED bulb
 // runs on the same grid as the data center, so it is compared in energy
 // terms: that keeps it correct for any OPENCODE_CO2_GRID_INTENSITY.
 export function computeEquivalents(co2Grams: number, energyKwh: number): Equivalents {
   return {
-    googleSearches: co2Grams / 0.2, // ~0.2 gCO2 per search
-    videoStreamSeconds: co2Grams / 0.01, // ~36 gCO2/hr streaming
-    phoneCharges: co2Grams / 8.22, // ~8.22 gCO2 per charge
+    phoneCharges: co2Grams / PHONE_CHARGE_GCO2,
     ledBulbMinutes: (energyKwh * 1000) / LED_BULB_WH_PER_MINUTE,
-    kmDriven: co2Grams / 121, // EU avg car ~121 gCO2/km
+    kmDriven: co2Grams / CAR_GCO2_PER_KM,
   }
 }
 
