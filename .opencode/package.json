@@ -1,13 +1,13 @@
 {
   "type": "module",
   "dependencies": {
-    "@opencode-ai/plugin": "1.19.5",
-    "@opentui/core": "0.4.5",
-    "@opentui/solid": "0.4.5",
+    "@opencode/plugin": "2.3.2",
+    "@opentui/core": ">=0.6.6",
+    "@opentui/solid": ">=0.6.6",
     "solid-js": "1.9.12"
   },
   "devDependencies": {
-    "@opentui/keymap": "0.4.5",
+    "@opencode/theme": "2.3.2",
     "@types/node": "26.6.6",
     "typescript": "7.0.2"
   },

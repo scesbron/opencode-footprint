@@ -1,11 +1,6 @@
-// Pure CO2 model shared by the server plugin (co2-tracker.ts), the TUI
-// sidebar (co2-sidebar.tsx) and the unit tests.
-//
-// Lives under plugins/lib/, not directly in plugins/, on purpose: OpenCode's
-// server plugin loader auto-globs every top-level `plugins/*.{ts,js}` file
-// and, for a module without a V1 default export, calls each of its exports
-// as `server(input, options)`. A one-level-deeper path is invisible to that
-// (non-recursive) glob, so these helpers never get misloaded as plugins.
+// Pure CO2 model shared by the server plugin (index.ts), the TUI sidebar
+// (tui.tsx) and the unit tests. Kept free of host-API imports so it stays
+// unit-testable.
 //
 // ---------------------------------------------------------------------------
 // CO2 emission model
@@ -172,13 +167,17 @@ export function addModelTokens(a: ModelTokens, b: ModelTokens): ModelTokens {
   }
 }
 
-// Structural view of the host SDK's Message union (user | assistant). Every
-// field is optional and `unknown`, so both the typed SDK messages and
-// partially populated (streaming or malformed) records are accepted, and
-// every value is validated before use.
+// Structural view of the host's message shapes. The V2 host sends
+// SessionMessageInfo (`type`, `model: { id, providerID }`, tokens and cost at
+// the top level); the older flat SDK shape (`role`, `modelID`) is still
+// accepted. Every field is optional and `unknown`, so partially populated
+// (streaming or malformed) records are accepted, and every value is
+// validated before use.
 export interface UsageMessage {
   role?: unknown
+  type?: unknown
   modelID?: unknown
+  model?: { id?: unknown; providerID?: unknown }
   providerID?: unknown
   cost?: unknown
   tokens?: {
@@ -194,8 +193,20 @@ export function safeNumber(value: unknown): number {
   return typeof value === "number" && Number.isFinite(value) ? value : 0
 }
 
-function isAssistant(message: UsageMessage | null | undefined): message is UsageMessage {
-  return message?.role === "assistant"
+export function isAssistant(message: UsageMessage | null | undefined): message is UsageMessage {
+  return message?.role === "assistant" || message?.type === "assistant"
+}
+
+function messageModelID(message: UsageMessage): string {
+  if (typeof message.modelID === "string") return message.modelID
+  if (typeof message.model?.id === "string") return message.model.id
+  return "unknown"
+}
+
+export function messageProviderID(message: UsageMessage): string | undefined {
+  if (typeof message.providerID === "string") return message.providerID
+  if (typeof message.model?.providerID === "string") return message.model.providerID
+  return undefined
 }
 
 function messageTokens(message: UsageMessage): ModelTokens {
@@ -210,8 +221,7 @@ function messageTokens(message: UsageMessage): ModelTokens {
 
 export function aggregateTokensByModel(messages: readonly (UsageMessage | null | undefined)[]): Map<string, ModelTokens> {
   return messages.filter(isAssistant).reduce((byModel, message) => {
-    const modelID = typeof message.modelID === "string" ? message.modelID : "unknown"
-    return byModel.set(modelID, addModelTokens(byModel.get(modelID) ?? emptyModelTokens(), messageTokens(message)))
+    return byModel.set(messageModelID(message), addModelTokens(byModel.get(messageModelID(message)) ?? emptyModelTokens(), messageTokens(message)))
   }, new Map<string, ModelTokens>())
 }
 

@@ -11,6 +11,8 @@ import {
   emptyModelTokens,
   getEcoGrade,
   impactBar,
+  isAssistant,
+  messageProviderID,
   safeNumber,
   sumEnergyKwh,
   type ModelEnergyBreakdown,
@@ -32,14 +34,17 @@ function messageTimes(message: UsageMessage): number[] {
 
 export function buildSessionStats(messages: readonly (UsageMessage | null | undefined)[]): SessionStats {
   const present = messages.filter((m): m is UsageMessage => m != null)
-  const assistant = present.filter((m) => m.role === "assistant")
+  const assistant = present.filter(isAssistant)
   const times = present.flatMap(messageTimes)
   const durationMs = times.length > 0 ? Math.max(...times) - Math.min(...times) : 0
   return {
     tokensByModel: aggregateTokensByModel(present),
     costUsd: assistant.reduce((sum, m) => sum + safeNumber(m.cost), 0),
     messages: countAssistantMessages(present),
-    providers: [...new Set(assistant.flatMap((m) => (typeof m.providerID === "string" ? [m.providerID] : [])))],
+    providers: [...new Set(assistant.flatMap((m) => {
+      const providerID = messageProviderID(m)
+      return providerID ? [providerID] : []
+    }))],
     durationMinutes: durationMs / 60_000,
   }
 }

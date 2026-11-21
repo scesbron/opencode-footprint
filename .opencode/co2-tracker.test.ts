@@ -3,9 +3,7 @@ import assert from "node:assert/strict"
 import { mkdtemp, readdir, readFile, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
-import { pathToFileURL } from "node:url"
-import type { PluginInput, ToolContext } from "@opencode-ai/plugin"
-import co2TrackerPlugin from "./plugins/co2-tracker.ts"
+import co2FootprintPlugin from "./plugins/co2-footprint/index.ts"
 import {
   aggregateTokensByModel,
   classifyModel,
@@ -20,9 +18,9 @@ import {
   type LifetimeSessions,
   type ModelTokens,
   type UsageMessage,
-} from "./plugins/lib/co2-core.ts"
-import { buildReportData, buildSessionStats, formatReport } from "./plugins/lib/co2-report.ts"
-import { computeSessionCo2, formatLifetimeLine, formatSessionLine } from "./plugins/lib/co2-sidebar-logic.ts"
+} from "./plugins/co2-footprint/lib/co2-core.ts"
+import { buildReportData, buildSessionStats, formatReport } from "./plugins/co2-footprint/lib/co2-report.ts"
+import { computeSessionCo2, formatLifetimeLine, formatSessionLine } from "./plugins/co2-footprint/lib/co2-sidebar-logic.ts"
 
 // ---------------------------------------------------------------------------
 // classifyModel
@@ -376,63 +374,115 @@ test("buildReportData + formatReport: consistent numbers across JSON and markdow
   assert.ok(report.includes("- anthropic\n- openai"))
 })
 
-// ---------------------------------------------------------------------------
-// Loader contract: OpenCode globs top-level plugins/*.{ts,js} and, unless a
-// module default exports a V1 plugin object, calls every export as a plugin.
-// ---------------------------------------------------------------------------
+// The V2 host's SessionMessageInfo: `type` (not `role`), `model: { id, providerID }`
+// (not `modelID`), tokens and cost at the top level. Captured from a live
+// session.context response; the V1-shaped `history` fixture above pins the
+// structural view's tolerance for the older flat shape.
+const hostHistory: UsageMessage[] = [
+  { type: "user", time: { created: 1_000_000 } },
+  {
+    type: "assistant",
+    model: { id: "claude-sonnet-4-5", providerID: "anthropic" },
+    cost: 0.02,
+    tokens: { input: 8000, output: 2000, reasoning: 0, cache: { read: 0, write: 0 } },
+    time: { created: 1_010_000, completed: 1_060_000 },
+  },
+  { type: "user", time: { created: 1_100_000 } },
+  {
+    type: "assistant",
+    model: { id: "claude-haiku-4-5", providerID: "anthropic" },
+    cost: 0.004,
+    tokens: { input: 2000, output: 450, reasoning: 0, cache: { read: 0, write: 0 } },
+    time: { created: 1_110_000, completed: 1_120_000 },
+  },
+  {
+    type: "assistant",
+    model: { id: "gpt-5", providerID: "openai" },
+    cost: 0.01,
+    tokens: { input: 1000, output: 500, reasoning: 500, cache: { read: 1000, write: 0 } },
+    time: { created: 1_130_000 },
+  },
+]
 
-test("every top-level server plugin file exports only a V1 default { id, server }", async () => {
-  const pluginsDir = path.join(import.meta.dirname, "plugins")
-  const files = (await readdir(pluginsDir, { withFileTypes: true }))
-    .filter((e) => e.isFile() && /\.(ts|js)$/.test(e.name))
-    .map((e) => e.name)
-  assert.ok(files.includes("co2-tracker.ts"))
-  for (const file of files) {
-    const mod: Record<string, unknown> = await import(pathToFileURL(path.join(pluginsDir, file)).href)
-    assert.deepEqual(Object.keys(mod), ["default"], `${file} must export only a default`)
-    const plugin = mod.default as Record<string, unknown>
-    assert.equal(typeof plugin.id, "string", `${file} default export needs a string id`)
-    assert.ok((plugin.id as string).trim().length > 0)
-    assert.equal(typeof plugin.server, "function", `${file} default export needs server()`)
-    assert.equal(plugin.tui, undefined, `${file} must not export both server() and tui()`)
-  }
+test("aggregateTokensByModel: accepts the V2 host shape (type, model.id)", () => {
+  const messages: UsageMessage[] = [
+    { type: "user", time: { created: 1 } },
+    {
+      type: "assistant",
+      model: { id: "glm-5.3", providerID: "opencode-go" },
+      tokens: { input: 1000, output: 200, reasoning: 50, cache: { read: 500, write: 10 } },
+      cost: 0.02,
+    },
+  ]
+  const byModel = aggregateTokensByModel(messages)
+  assert.equal(byModel.size, 1)
+  assert.deepEqual(byModel.get("glm-5.3"), {
+    input: 1000,
+    output: 200,
+    reasoning: 50,
+    cacheRead: 500,
+    cacheWrite: 10,
+  })
+})
+
+test("buildSessionStats: reads provider and cost from the V2 host shape", () => {
+  const stats = buildSessionStats([
+    {
+      type: "assistant",
+      model: { id: "glm-5.3", providerID: "opencode-go" },
+      tokens: { input: 10 },
+      cost: 0.01,
+    },
+  ])
+  assert.equal(stats.messages, 1)
+  assert.deepEqual(stats.providers, ["opencode-go"])
+  assert.ok(Math.abs(stats.costUsd - 0.01) < 1e-12)
 })
 
 // ---------------------------------------------------------------------------
-// co2_report tool: built from the host's message history via the SDK client
+// co2_report tool (V2 plugin): registered through ctx.tool.transform, reads
+// the session's full history via ctx.session.context
 // ---------------------------------------------------------------------------
 
-type MessagesResponse = { data?: { info: UsageMessage }[]; error?: unknown }
+type AddedTool = {
+  name: string
+  description: string
+  execute: (args: { export?: "json" | "markdown" }, context: { sessionID: string }) => Promise<unknown>
+}
 
-async function loadTool(messages: () => MessagesResponse) {
+async function loadTool(history: () => Promise<unknown[]>, directory = "/unused") {
+  const added: AddedTool[] = []
   const requested: string[] = []
-  const client = {
-    app: { log: async () => ({}) },
+  const ctx = {
+    location: { directory },
+    tool: {
+      transform: async (callback: (editor: unknown) => void) =>
+        void callback({ add: (tool: AddedTool) => void added.push(tool) }),
+    },
     session: {
-      messages: async (options: { path: { id: string } }) => {
-        requested.push(options.path.id)
-        return messages()
+      context: async ({ sessionID }: { sessionID: string }) => {
+        requested.push(sessionID)
+        return history()
       },
     },
   }
-  const hooks = await co2TrackerPlugin.server({ client } as unknown as PluginInput)
-  const tool = hooks.tool?.co2_report
-  assert.ok(tool)
-  return { tool, requested }
+  const plugin = co2FootprintPlugin as { id: string; setup: (ctx: unknown) => Promise<void> }
+  await plugin.setup(ctx)
+  assert.equal(plugin.id, "opencode-footprint.co2-tracker")
+  assert.equal(added.length, 1)
+  assert.equal(added[0].name, "co2_report")
+  assert.ok(added[0].description.length > 0)
+  return { tool: added[0], requested }
 }
 
-function toolContext(sessionID: string, directory: string): ToolContext {
-  return { sessionID, directory } as unknown as ToolContext
-}
-
-async function run(tool: Awaited<ReturnType<typeof loadTool>>["tool"], args: { export?: "json" | "markdown" }, ctx: ToolContext) {
-  const output = await tool.execute(args, ctx)
-  return typeof output === "string" ? output : output.output
+async function run(tool: AddedTool, args: { export?: "json" | "markdown" }, sessionID = "s1") {
+  const result = (await tool.execute(args, { sessionID })) as { content: string }
+  return result.content
 }
 
 test("co2_report tool: reports a resumed session's full history without any live events", async () => {
-  const { tool, requested } = await loadTool(() => ({ data: history.map((info) => ({ info })) }))
-  const output = await run(tool, {}, toolContext("s-resumed", "/unused"))
+  const { tool, requested } = await loadTool(() => Promise.resolve(hostHistory))
+  const output = await run(tool, {}, "s-resumed")
   assert.deepEqual(requested, ["s-resumed"])
   assert.ok(output.includes("| Messages | 3 |"))
   assert.ok(output.includes("| Total tokens | 15,450 |"))
@@ -443,30 +493,29 @@ test("co2_report tool: reports a resumed session's full history without any live
 
 test("co2_report tool: re-reads history on every call (streamed updates are never double-counted)", async () => {
   const snapshots: UsageMessage[][] = [
-    [{ role: "assistant", modelID: "claude-sonnet-4-5", tokens: { input: 100 }, cost: 0.001 }],
-    [{ role: "assistant", modelID: "claude-sonnet-4-5", tokens: { input: 100, output: 50 }, cost: 0.002 }],
-    [{ role: "assistant", modelID: "claude-sonnet-4-5", tokens: { input: 100, output: 400 }, cost: 0.005 }],
+    [{ type: "assistant", model: { id: "claude-sonnet-4-5" }, tokens: { input: 100 }, cost: 0.001 }],
+    [{ type: "assistant", model: { id: "claude-sonnet-4-5" }, tokens: { input: 100, output: 50 }, cost: 0.002 }],
+    [{ type: "assistant", model: { id: "claude-sonnet-4-5" }, tokens: { input: 100, output: 400 }, cost: 0.005 }],
   ]
   let call = 0
-  const { tool } = await loadTool(() => ({ data: snapshots[call++].map((info) => ({ info })) }))
-  const ctx = toolContext("s1", "/unused")
-  await run(tool, {}, ctx)
-  await run(tool, {}, ctx)
-  const output = await run(tool, {}, ctx)
+  const { tool } = await loadTool(() => Promise.resolve(snapshots[call++].map((info) => ({ info }))))
+  await run(tool, {})
+  await run(tool, {})
+  const output = await run(tool, {})
   assert.ok(output.includes("| Messages | 1 |"))
   assert.ok(output.includes("| Total tokens | 500 |"))
   assert.ok(output.includes("| API cost | $0.005000 |"))
 })
 
 test("co2_report tool: no assistant messages yet", async () => {
-  const { tool } = await loadTool(() => ({ data: [{ info: { role: "user" } }] }))
-  const output = await run(tool, {}, toolContext("s1", "/unused"))
+  const { tool } = await loadTool(() => Promise.resolve([{ type: "user" }]))
+  const output = await run(tool, {})
   assert.ok(output.startsWith("No usage data recorded yet"))
 })
 
 test("co2_report tool: surfaces a failed history request instead of an empty report", async () => {
-  const { tool } = await loadTool(() => ({ error: { name: "NotFoundError" } }))
-  const output = await run(tool, {}, toolContext("missing", "/unused"))
+  const { tool } = await loadTool(() => Promise.reject(new Error("NotFoundError")))
+  const output = await run(tool, {}, "missing")
   assert.ok(output.startsWith("Could not read this session's messages"))
   assert.ok(output.includes("NotFoundError"))
 })
@@ -474,22 +523,22 @@ test("co2_report tool: surfaces a failed history request instead of an empty rep
 test("co2_report tool: export writes co2-report.json and co2-report.md, both readable", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "co2-export-"))
   try {
-    const { tool } = await loadTool(() => ({
-      data: [
-        {
-          info: {
-            role: "assistant",
-            modelID: "claude-sonnet-4-5",
-            providerID: "anthropic",
-            tokens: { input: 1000, output: 500, reasoning: 0, cache: { read: 0, write: 0 } },
-            cost: 0.01,
+    const { tool } = await loadTool(
+      () =>
+        Promise.resolve([
+          {
+            info: {
+              type: "assistant",
+              model: { id: "claude-sonnet-4-5", providerID: "anthropic" },
+              tokens: { input: 1000, output: 500, reasoning: 0, cache: { read: 0, write: 0 } },
+              cost: 0.01,
+            },
           },
-        },
-      ],
-    }))
-    const ctx = toolContext("s1", dir)
+        ]),
+      dir,
+    )
 
-    const jsonOutput = await run(tool, { export: "json" }, ctx)
+    const jsonOutput = await run(tool, { export: "json" })
     const jsonPath = path.join(dir, "co2-report.json")
     assert.ok(jsonOutput.includes(jsonPath))
     const parsed = JSON.parse(await readFile(jsonPath, "utf8"))
@@ -498,7 +547,7 @@ test("co2_report tool: export writes co2-report.json and co2-report.md, both rea
     assert.equal(parsed.costUsd, 0.01)
     assert.ok(parsed.co2Grams > 0)
 
-    const mdOutput = await run(tool, { export: "markdown" }, ctx)
+    const mdOutput = await run(tool, { export: "markdown" })
     const mdPath = path.join(dir, "co2-report.md")
     assert.ok(mdOutput.includes(mdPath))
     const mdContent = await readFile(mdPath, "utf8")
@@ -506,4 +555,12 @@ test("co2_report tool: export writes co2-report.json and co2-report.md, both rea
   } finally {
     await rm(dir, { recursive: true, force: true })
   }
+})
+
+test("the plugin package exposes server and tui parts, with no stray top-level plugin files", async () => {
+  const pluginsDir = path.join(import.meta.dirname, "plugins")
+  const entries = (await readdir(pluginsDir, { withFileTypes: true })).map((entry) => entry.name).sort()
+  assert.deepEqual(entries, ["co2-footprint"])
+  const pkg = JSON.parse(await readFile(path.join(pluginsDir, "co2-footprint", "package.json"), "utf8"))
+  assert.deepEqual(pkg.exports, { ".": "./index.ts", "./tui": "./tui.tsx" })
 })

@@ -1,0 +1,5 @@
+{
+  "name": "opencode-footprint",
+  "type": "module",
+  "exports": { ".": "./index.ts", "./tui": "./tui.tsx" }
+}

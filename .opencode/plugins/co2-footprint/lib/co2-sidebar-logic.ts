@@ -1,9 +1,6 @@
-// Pure logic backing the TUI sidebar panel (co2-sidebar.tsx). Kept in its
-// own plain .ts module (no JSX) so it can be unit tested directly. The
-// component only renders precomputed strings from here.
-//
-// Lives under plugins/lib/ for the same reason as co2-core.ts: OpenCode's
-// server plugin loader globs only the top level of plugins/.
+// Pure logic backing the TUI sidebar panel (tui.tsx). Kept in its own plain
+// .ts module (no JSX) so it can be unit tested directly. The component only
+// renders precomputed strings from here.
 import {
   aggregateTokensByModel,
   computeModelEnergyBreakdown,
