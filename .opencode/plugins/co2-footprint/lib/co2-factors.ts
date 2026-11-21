@@ -75,6 +75,9 @@ function validate(raw: unknown): Factors {
   if (!Number.isFinite(factors.cacheReadFactor) || (factors.cacheReadFactor ?? 0) <= 0) {
     throw invalid("cacheReadFactor must be a positive number")
   }
+  if (factors.families == null || typeof factors.families !== "object" || Array.isArray(factors.families)) {
+    throw invalid("families must be an object of energy factors")
+  }
   const entries = [...Object.entries(factors.families ?? {}), ...Object.entries(factors.tiers ?? {})]
   for (const [name, entry] of entries) {
     if (entry == null || !Number.isFinite(entry.input) || entry.input <= 0 || !Number.isFinite(entry.output) || entry.output <= 0) {
