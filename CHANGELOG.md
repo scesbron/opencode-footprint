@@ -41,6 +41,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The "Minutes of a 10W LED bulb" equivalent is computed from energy, so it is now correct when `OPENCODE_CO2_GRID_INTENSITY` is set (it assumed 400 gCO2/kWh).
 - A failed session history request is reported as an error instead of an empty report.
 - The README example output now matches what the report actually prints.
+- The sidebar computes from the full paged message history instead of the data layer's trailing page, so a resumed long session no longer undercounts the session figure nor overwrites the all-time total with a truncated one (caught in final review).
+- `loadFactors` rejects a factors file without a `families` table at load, instead of crashing later inside a computation.
 
 ## [0.2.0] - 2026-07-17
 

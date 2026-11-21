@@ -2,9 +2,10 @@
 //
 // All pure logic lives under lib/ (co2-core.ts, co2-report.ts); this file is
 // wiring: register the tool through ctx.tool.transform, read the session's
-// full message history via ctx.session.context, and hand the messages to the
-// report builder. The report is rebuilt from history on every call, so it
-// covers resumed sessions and messages sent before this process started.
+// active context (the messages after the last compaction) via
+// ctx.session.context, and hand the messages to the report builder. The
+// report is rebuilt from that context on every call, so resumed sessions
+// are covered; compacted sessions report post-compaction usage.
 import { Plugin } from "@opencode/plugin"
 import { writeFile } from "node:fs/promises"
 import path from "node:path"

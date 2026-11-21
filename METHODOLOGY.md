@@ -100,6 +100,23 @@ The previous "Google searches" (0.2 g) and "video streaming" rows were
 removed: both traced to unsourced blog figures, and claude-carbon removed
 the searches row for the same reason.
 
+## What is counted
+
+Two data paths, two scopes:
+
+- **The `/co2` report** reads the session's *active context* -- every
+  message after the last compaction. Auto-compaction is routine in exactly
+  the long agentic sessions this plugin targets, so a compacted session
+  reports post-compaction usage only, and the compaction call's own tokens
+  are not counted.
+- **The sidebar** fetches the *full stored history* (paged, overlaid with
+  the reactive live page) and therefore keeps counting across compactions;
+  its all-time total is keyed by the factors version.
+
+The two can legitimately differ after a compaction. A future mechanism
+could accumulate durable totals server-side from the event stream and make
+both paths one.
+
 ## Limitations
 
 - **Order of magnitude only.** Not a carbon report, not for regulatory use.

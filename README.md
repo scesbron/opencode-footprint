@@ -4,7 +4,7 @@ An [OpenCode](https://opencode.ai) plugin that tracks the CO2 carbon footprint o
 
 ## Features
 
-- **Full-session tracking** -- the report is computed from the session's whole message history, so resumed sessions and OpenCode restarts are covered
+- **Session tracking** -- the report is rebuilt from the session's active context on every call, so resumed sessions and OpenCode restarts are covered; the sidebar computes from the full paged history. See [METHODOLOGY.md](METHODOLOGY.md) for exactly what is counted.
 - **Eco scoring** -- assigns a letter grade (A+ to F) based on CO2 efficiency per message
 - **Real-world equivalents** -- translates grams of CO2 into smartphone charges, LED-bulb time and km driven, with every factor cited
 - **Per-kind, per-model billing** -- cache reads at a reduced factor, output and reasoning at the decode factor, each model at its own family factors, summed across the session
@@ -204,11 +204,11 @@ The session grade is based on grams of CO2 per message, on the scale of the per-
 A TUI part (`.opencode/plugins/co2-footprint/tui.tsx`) renders the current session's eco grade and an all-time total, appended beside the sidebar footer's built-in content:
 
 ```
-B  1.18g CO2  0.0118 kWh
-lifetime: 47.6 g
+B  1.18 g CO2  0.0118 kWh
+lifetime: 42.5 g
 ```
 
-- Line 1: session eco grade, CO2 grams, and energy (kWh) for the open session -- recomputed reactively as messages stream in, from the same message history and the same `lib/co2-core.ts` math as the `/co2` report, so both always agree.
+- Line 1: session eco grade, CO2 grams, and energy (kWh) for the open session -- recomputed reactively as messages stream in, from the full paged history overlaid with the live page, using the same `lib/co2-core.ts` math as the `/co2` report. After a compaction the report (active context) and the sidebar (full history) can legitimately differ: see [METHODOLOGY.md](METHODOLOGY.md).
 - Line 2: `lifetime: X g` -- an all-time CO2 total accumulated across every session, persisted through the TUI plugin storage so it survives restarts.
 
 OpenCode 2 slots compose: the panel appends to the sidebar footer and the built-in footer content (path, version) stays visible. The panel is blank until the session's first assistant reply.
