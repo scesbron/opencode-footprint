@@ -48,11 +48,12 @@ export interface Factors {
   version: number
   cacheReadFactor: number
   families: Record<string, EnergyFactors>
+  overrides: Record<string, string>
   tiers: Record<ModelSize, EnergyFactors>
 }
 
 export interface ResolvedModelFactors {
-  source: "family" | "tier"
+  source: "override" | "family" | "tier"
   label: string
   input: number
   output: number
@@ -83,6 +84,11 @@ function validate(raw: unknown): Factors {
   for (const tier of ["small", "medium", "large"] as const) {
     if (factors.tiers?.[tier] == null) throw invalid(`missing tier "${tier}"`)
   }
+  for (const [model, family] of Object.entries(factors.overrides ?? {})) {
+    if (typeof family !== "string" || factors.families?.[family] == null) {
+      throw invalid(`override "${model}" points at unknown family "${String(family)}"`)
+    }
+  }
   return factors as Factors
 }
 
@@ -93,11 +99,20 @@ export function loadFactors(filePath: string | URL = DEFAULT_PATH): Factors {
   return factors
 }
 
-// A family marker matches a whole id segment (same rule as classifyModel),
-// so a future family key applies to every provider's ids at once; anything
-// else falls back to the size-tier classification.
+// Resolution order: model overrides (longest key first, so "glm-5.3-flash"
+// is not captured by "glm-5.3"; a key matches the last path segment exactly
+// or as its dash prefix), then family markers as whole id segments, then
+// the size-tier fallback.
 export function resolveModelFactors(modelID: string, factors: Factors): ResolvedModelFactors {
   const id = modelID.toLowerCase()
+  const name = id.slice(id.lastIndexOf("/") + 1)
+  const override = Object.keys(factors.overrides ?? {})
+    .sort((a, b) => b.length - a.length)
+    .find((key) => name === key || name.startsWith(`${key}-`))
+  if (override) {
+    const family = factors.overrides[override]
+    return { source: "override", label: family, ...factors.families[family] }
+  }
   const segments = new Set(id.split(/[-/._:@\s]+/))
   const family = Object.keys(factors.families).find((key) => segments.has(key))
   if (family) return { source: "family", label: family, ...factors.families[family] }

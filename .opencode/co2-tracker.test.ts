@@ -613,6 +613,12 @@ test("loadFactors: returns the shipped factor table", () => {
     medium: { input: 136, output: 2878 },
     large: { input: 272, output: 5756 },
   })
+  assert.deepEqual(factors.overrides, {
+    "glm-5.3": "sonnet",
+    "glm-5.3-flash": "haiku",
+    "kimi-k3.1-pro": "sonnet",
+    "kimi-k3.1-pro-highspeed": "sonnet",
+  })
 })
 
 test("resolveModelFactors: known families, tier fallback for the rest", () => {
@@ -628,13 +634,31 @@ test("resolveModelFactors: known families, tier fallback for the rest", () => {
   assert.equal(opus.label, "opus")
 
   const glm = resolveModelFactors("glm-5.3", factors)
-  assert.equal(glm.source, "tier")
-  assert.equal(glm.label, "medium")
+  assert.equal(glm.source, "override")
+  assert.equal(glm.label, "sonnet")
   assert.equal(glm.input, 136)
 
   const unknown = resolveModelFactors("totally-unknown-model-xyz", factors)
   assert.equal(unknown.source, "tier")
   assert.equal(unknown.label, "medium")
+})
+
+test("resolveModelFactors: model overrides, longest key first", () => {
+  const factors = loadFactors()
+  const flash = resolveModelFactors("glm-5.3-flash", factors)
+  assert.equal(flash.source, "override")
+  assert.equal(flash.label, "haiku")
+  assert.equal(flash.input, 35)
+
+  assert.equal(resolveModelFactors("glm-5.3", factors).label, "sonnet")
+  // Longest key wins over the shorter prefix.
+  assert.equal(resolveModelFactors("glm-5.3-flash-20261121", factors).label, "haiku")
+  // Provider prefixes resolve on the last path segment.
+  assert.equal(resolveModelFactors("opencode-go/glm-5.3", factors).label, "sonnet")
+  assert.equal(resolveModelFactors("kimi-k3.1-pro-highspeed", factors).label, "sonnet")
+  assert.equal(resolveModelFactors("kimi-k3.1-pro", factors).label, "sonnet")
+  // The override does not capture sibling versions.
+  assert.equal(resolveModelFactors("glm-5.2", factors).source, "tier")
 })
 
 test("getCacheReadFactor: env override, invalid values fall back to the file", () => {

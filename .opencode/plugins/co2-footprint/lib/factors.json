@@ -6,6 +6,12 @@
     "haiku": { "input": 35, "output": 722 },
     "opus": { "input": 272, "output": 5756 }
   },
+  "overrides": {
+    "glm-5.3": "sonnet",
+    "glm-5.3-flash": "haiku",
+    "kimi-k3.1-pro": "sonnet",
+    "kimi-k3.1-pro-highspeed": "sonnet"
+  },
   "tiers": {
     "small": { "input": 35, "output": 722 },
     "medium": { "input": 136, "output": 2878 },
