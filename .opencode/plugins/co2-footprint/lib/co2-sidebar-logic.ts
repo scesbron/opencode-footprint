@@ -48,3 +48,22 @@ export function formatMass(grams: number): string {
 export function formatLifetimeLine(lifetime: LifetimeSummary): string {
   return `lifetime: ${formatMass(lifetime.grams)}`
 }
+
+// Overlay the TUI's live trailing page onto the full-history baseline: the
+// data layer seeds a resumed session with its last page only, so the
+// sidebar fetches the complete history itself and lets fresher live
+// entries (same id) win. Messages without ids are kept as-is.
+export function mergeSessionMessages(
+  baseline: readonly UsageMessage[],
+  live: readonly UsageMessage[],
+): UsageMessage[] {
+  const byKey = new Map<string, UsageMessage>()
+  const loose: UsageMessage[] = []
+  const put = (message: UsageMessage): void => {
+    if (typeof message.id === "string") byKey.set(message.id, message)
+    else loose.push(message)
+  }
+  baseline.forEach(put)
+  live.forEach(put)
+  return [...byKey.values(), ...loose]
+}

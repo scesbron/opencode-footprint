@@ -18,7 +18,7 @@ import {
   type UsageMessage,
 } from "./plugins/co2-footprint/lib/co2-core.ts"
 import { buildReportData, buildSessionStats, formatReport } from "./plugins/co2-footprint/lib/co2-report.ts"
-import { computeSessionCo2, formatLifetimeLine, formatMass, formatSessionLine } from "./plugins/co2-footprint/lib/co2-sidebar-logic.ts"
+import { computeSessionCo2, formatLifetimeLine, formatMass, formatSessionLine, mergeSessionMessages } from "./plugins/co2-footprint/lib/co2-sidebar-logic.ts"
 import {
   classifyModel,
   getCacheReadFactor,
@@ -512,7 +512,7 @@ async function run(tool: AddedTool, args: { export?: "json" | "markdown" }, sess
   return result.content
 }
 
-test("co2_report tool: reports a resumed session's full history without any live events", async () => {
+test("co2_report tool: reports the session's active-context history without any live events", async () => {
   const { tool, requested } = await loadTool(() => Promise.resolve(hostHistory))
   const output = await run(tool, {}, "s-resumed")
   assert.deepEqual(requested, ["s-resumed"])
@@ -686,6 +686,59 @@ test("loadFactors: throws on a malformed or incomplete factors file", async () =
   } finally {
     await rm(dir, { recursive: true, force: true })
   }
+})
+
+test("loadFactors: rejects a file without a families table", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "co2-factors-"))
+  try {
+    const bad = path.join(dir, "factors.json")
+    await writeFile(
+      bad,
+      JSON.stringify({
+        version: 2,
+        cacheReadFactor: 0.08,
+        families: null,
+        tiers: {
+          small: { input: 35, output: 722 },
+          medium: { input: 136, output: 2878 },
+          large: { input: 272, output: 5756 },
+        },
+      }),
+      "utf8",
+    )
+    assert.throws(() => loadFactors(bad))
+    await writeFile(bad, JSON.stringify({ version: 2, cacheReadFactor: 0.08, tiers: {} }), "utf8")
+    assert.throws(() => loadFactors(bad))
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test("mergeSessionMessages: the live page overlays the full-history baseline by id", () => {
+  const baseline: UsageMessage[] = [
+    { type: "assistant", id: "m1", model: { id: "glm-5.3" }, tokens: { input: 100 }, cost: 0.001 },
+    { type: "assistant", id: "m2", model: { id: "glm-5.3" }, tokens: { input: 100 }, cost: 0.001 },
+    { type: "assistant", id: "m3", model: { id: "glm-5.3" }, tokens: { input: 100 }, cost: 0.001 },
+  ]
+  const live: UsageMessage[] = [
+    // m2 is still streaming in the trailing page: its fresher usage wins.
+    { type: "assistant", id: "m2", model: { id: "glm-5.3" }, tokens: { input: 100, output: 40 }, cost: 0.002 },
+    { type: "assistant", id: "m4", model: { id: "glm-5.3" }, tokens: { input: 100, output: 10 }, cost: 0.003 },
+  ]
+  const merged = mergeSessionMessages(baseline, live)
+  assert.equal(merged.length, 4)
+  assert.deepEqual(aggregateTokensByModel(merged).get("glm-5.3"), {
+    input: 400,
+    output: 50,
+    reasoning: 0,
+    cacheRead: 0,
+    cacheWrite: 0,
+  })
+  assert.ok(Math.abs(buildSessionStats(merged).costUsd - 0.007) < 1e-12)
+
+  // Messages without ids are kept as-is, never deduplicated away.
+  const loose: UsageMessage[] = [{ type: "assistant", model: { id: "glm-5.3" }, tokens: { input: 1 } }]
+  assert.equal(mergeSessionMessages([...baseline, ...loose], []).length, 4)
 })
 
 test("lifetimeStorageKey: versioned with the factors version", () => {

@@ -131,6 +131,7 @@ export function addModelTokens(a: ModelTokens, b: ModelTokens): ModelTokens {
 // (streaming or malformed) records are accepted, and every value is
 // validated before use.
 export interface UsageMessage {
+  id?: unknown
   role?: unknown
   type?: unknown
   modelID?: unknown

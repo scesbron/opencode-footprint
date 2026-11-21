@@ -4,14 +4,15 @@
 // footer. All math lives in lib/ (unit-tested plain .ts modules); this file
 // only wires reactive reads to those pure functions and renders strings.
 import { Plugin } from "@opencode/plugin/tui"
-import { createEffect, createMemo, Show } from "solid-js"
+import { createEffect, createMemo, createResource, Show } from "solid-js"
 import {
   getGridIntensity,
   summarizeLifetime,
   type LifetimeSessionTotal,
+  type UsageMessage,
 } from "./lib/co2-core.ts"
 import { lifetimeStorageKey, loadFactors } from "./lib/co2-factors.ts"
-import { computeSessionCo2, formatLifetimeLine, formatSessionLine } from "./lib/co2-sidebar-logic.ts"
+import { computeSessionCo2, formatLifetimeLine, formatSessionLine, mergeSessionMessages } from "./lib/co2-sidebar-logic.ts"
 
 type TuiContext = Plugin.Context
 
@@ -25,16 +26,31 @@ function Footer(props: { context: TuiContext; sessionID: string }) {
     initial: {},
   })
 
-  // Load this session's message cache once; the data layer keeps it fresh.
+  // The data layer seeds a resumed session with its trailing page only (the
+  // host syncs ~20 messages), so the full history is fetched once per
+  // session switch and overlaid with the reactive live list below.
+  const [fullHistory] = createResource(
+    () => props.sessionID,
+    async (sessionID) => {
+      const collected: UsageMessage[] = []
+      let cursor: string | undefined
+      do {
+        const response = await context.client.message.list({ sessionID, limit: 200, ...(cursor ? { cursor } : {}) })
+        collected.push(...response.data)
+        cursor = response.cursor.next ?? undefined
+      } while (cursor)
+      return collected
+    },
+  )
+
+  // Seed the live page once; it then grows reactively as messages stream.
   void context.data.session.message.sync(props.sessionID)
 
-  const session = createMemo(() =>
-    computeSessionCo2(
-      context.data.session.message.list(props.sessionID),
-      getGridIntensity(),
-      loadFactors(),
-    ),
-  )
+  const session = createMemo(() => {
+    const baseline = fullHistory.latest ?? []
+    const live = context.data.session.message.list(props.sessionID) ?? []
+    return computeSessionCo2(mergeSessionMessages(baseline, live), getGridIntensity(), loadFactors())
+  })
 
   // Upsert this session's running total (never accumulate a delta): repeated
   // re-renders, reloads and replayed events all recompute the same total, so
