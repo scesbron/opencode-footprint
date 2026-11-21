@@ -20,7 +20,7 @@ import {
   type UsageMessage,
 } from "./plugins/co2-footprint/lib/co2-core.ts"
 import { buildReportData, buildSessionStats, formatReport } from "./plugins/co2-footprint/lib/co2-report.ts"
-import { computeSessionCo2, formatLifetimeLine, formatSessionLine } from "./plugins/co2-footprint/lib/co2-sidebar-logic.ts"
+import { computeSessionCo2, formatLifetimeLine, formatMass, formatSessionLine } from "./plugins/co2-footprint/lib/co2-sidebar-logic.ts"
 
 // ---------------------------------------------------------------------------
 // classifyModel
@@ -273,12 +273,23 @@ test("computeSessionCo2: no assistant messages yields zero footprint, no NaN", (
   assert.deepEqual(summary, { grade: "A+", co2Grams: 0, energyKwh: 0, messages: 0 })
 })
 
+test("formatMass: picks the unit that matches the magnitude", () => {
+  assert.equal(formatMass(0), "0.00 g")
+  assert.equal(formatMass(0.42), "0.42 g")
+  assert.equal(formatMass(9.99), "9.99 g")
+  assert.equal(formatMass(42.5), "42.5 g")
+  assert.equal(formatMass(123), "123 g")
+  assert.equal(formatMass(1234), "1.23 kg")
+  assert.equal(formatMass(11045.86), "11.05 kg")
+  assert.equal(formatMass(1_250_000), "1.25 t")
+})
+
 test("formatSessionLine / formatLifetimeLine: render the expected one-line strings", () => {
   const line = formatSessionLine({ grade: "B", co2Grams: 1.234, energyKwh: 0.05678, messages: 3 })
-  assert.equal(line, "B  1.23g CO2  0.0568 kWh")
+  assert.equal(line, "B  1.23 g CO2  0.0568 kWh")
 
-  const lifetime = formatLifetimeLine({ grams: 42.05, kwh: 1.2, sessions: 7 })
-  assert.equal(lifetime, "lifetime: 42.0 g")
+  const lifetime = formatLifetimeLine({ grams: 42.5, kwh: 1.2, sessions: 7 })
+  assert.equal(lifetime, "lifetime: 42.5 g")
 })
 
 // ---------------------------------------------------------------------------

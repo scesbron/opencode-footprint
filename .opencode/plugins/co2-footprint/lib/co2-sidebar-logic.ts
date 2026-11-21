@@ -30,9 +30,19 @@ export function computeSessionCo2(
 }
 
 export function formatSessionLine(summary: SessionCo2Summary): string {
-  return `${summary.grade}  ${summary.co2Grams.toFixed(2)}g CO2  ${summary.energyKwh.toFixed(4)} kWh`
+  return `${summary.grade}  ${formatMass(summary.co2Grams)} CO2  ${summary.energyKwh.toFixed(4)} kWh`
+}
+
+// Pick the unit that matches the magnitude: grams below 1 kg, kilograms
+// below 1 t, tonnes beyond, with decimals that shrink as the number grows.
+export function formatMass(grams: number): string {
+  if (grams >= 1_000_000) return `${(grams / 1_000_000).toFixed(2)} t`
+  if (grams >= 1_000) return `${(grams / 1_000).toFixed(2)} kg`
+  if (grams >= 100) return `${grams.toFixed(0)} g`
+  if (grams >= 10) return `${grams.toFixed(1)} g`
+  return `${grams.toFixed(2)} g`
 }
 
 export function formatLifetimeLine(lifetime: LifetimeSummary): string {
-  return `lifetime: ${lifetime.grams.toFixed(1)} g`
+  return `lifetime: ${formatMass(lifetime.grams)}`
 }
