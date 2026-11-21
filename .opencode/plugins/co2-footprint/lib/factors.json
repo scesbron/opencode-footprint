@@ -1,0 +1,14 @@
+{
+  "version": 2,
+  "cacheReadFactor": 0.08,
+  "families": {
+    "sonnet": { "input": 136, "output": 2878 },
+    "haiku": { "input": 35, "output": 722 },
+    "opus": { "input": 272, "output": 5756 }
+  },
+  "tiers": {
+    "small": { "input": 35, "output": 722 },
+    "medium": { "input": 136, "output": 2878 },
+    "large": { "input": 272, "output": 5756 }
+  }
+}

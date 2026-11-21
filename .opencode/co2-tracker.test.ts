@@ -1,17 +1,15 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
-import { mkdtemp, readdir, readFile, rm } from "node:fs/promises"
+import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import co2FootprintPlugin from "./plugins/co2-footprint/index.ts"
 import {
   aggregateTokensByModel,
-  classifyModel,
   computeEquivalents,
   computeModelEnergyBreakdown,
   getEcoGrade,
   getGridIntensity,
-  PUE,
   sumEnergyKwh,
   summarizeLifetime,
   upsertLifetimeSession,
@@ -21,6 +19,13 @@ import {
 } from "./plugins/co2-footprint/lib/co2-core.ts"
 import { buildReportData, buildSessionStats, formatReport } from "./plugins/co2-footprint/lib/co2-report.ts"
 import { computeSessionCo2, formatLifetimeLine, formatMass, formatSessionLine } from "./plugins/co2-footprint/lib/co2-sidebar-logic.ts"
+import {
+  classifyModel,
+  getCacheReadFactor,
+  lifetimeStorageKey,
+  loadFactors,
+  resolveModelFactors,
+} from "./plugins/co2-footprint/lib/co2-factors.ts"
 
 // ---------------------------------------------------------------------------
 // classifyModel
@@ -90,14 +95,14 @@ test("classifyModel: unknown model defaults to medium", () => {
 // ---------------------------------------------------------------------------
 
 test("getEcoGrade: boundary values map to the correct grade", () => {
-  assert.equal(getEcoGrade(0.1, 1).grade, "A+")
-  assert.equal(getEcoGrade(0.100001, 1).grade, "A")
-  assert.equal(getEcoGrade(0.3, 1).grade, "A")
-  assert.equal(getEcoGrade(0.8, 1).grade, "B")
-  assert.equal(getEcoGrade(1.5, 1).grade, "B-")
-  assert.equal(getEcoGrade(3.0, 1).grade, "C")
-  assert.equal(getEcoGrade(6.0, 1).grade, "D")
-  assert.equal(getEcoGrade(6.000001, 1).grade, "F")
+  assert.equal(getEcoGrade(0.01, 1).grade, "A+")
+  assert.equal(getEcoGrade(0.010001, 1).grade, "A")
+  assert.equal(getEcoGrade(0.03, 1).grade, "A")
+  assert.equal(getEcoGrade(0.08, 1).grade, "B")
+  assert.equal(getEcoGrade(0.15, 1).grade, "B-")
+  assert.equal(getEcoGrade(0.3, 1).grade, "C")
+  assert.equal(getEcoGrade(0.6, 1).grade, "D")
+  assert.equal(getEcoGrade(0.600001, 1).grade, "F")
   assert.equal(getEcoGrade(1_000_000, 1).grade, "F")
 })
 
@@ -107,56 +112,62 @@ test("getEcoGrade: zero messages does not divide by zero", () => {
 })
 
 // ---------------------------------------------------------------------------
-// Per-model energy summation
+// Per-model energy: billed per token kind, family factors, PUE included
 // ---------------------------------------------------------------------------
 
-test("computeModelEnergyBreakdown + sumEnergyKwh: weighted total across models", () => {
+test("computeModelEnergyBreakdown + sumEnergyKwh: per-kind billing across models", () => {
   const tokensByModel = new Map<string, ModelTokens>([
-    [
-      "claude-haiku-4-5", // small: 0.0000003 kWh/token
-      { input: 1000, output: 0, reasoning: 0, cacheRead: 0, cacheWrite: 0 },
-    ],
-    [
-      "claude-opus-4", // large: 0.000003 kWh/token
-      { input: 1000, output: 0, reasoning: 0, cacheRead: 0, cacheWrite: 0 },
-    ],
+    ["claude-haiku-4-5", { input: 1000, output: 0, reasoning: 0, cacheRead: 0, cacheWrite: 0 }],
+    ["claude-opus-4", { input: 0, output: 2000, reasoning: 0, cacheRead: 0, cacheWrite: 0 }],
   ])
 
-  const breakdown = computeModelEnergyBreakdown(tokensByModel)
+  const breakdown = computeModelEnergyBreakdown(tokensByModel, loadFactors())
   assert.equal(breakdown.length, 2)
 
   const haiku = breakdown.find((b) => b.modelID === "claude-haiku-4-5")!
   const opus = breakdown.find((b) => b.modelID === "claude-opus-4")!
   assert.equal(haiku.tokens, 1000)
-  assert.equal(opus.tokens, 1000)
+  assert.equal(opus.tokens, 2000)
 
-  const expectedHaikuEnergy = 1000 * 0.0000003 * PUE
-  const expectedOpusEnergy = 1000 * 0.000003 * PUE
-  assert.ok(Math.abs(haiku.energyKwh - expectedHaikuEnergy) < 1e-12)
-  assert.ok(Math.abs(opus.energyKwh - expectedOpusEnergy) < 1e-12)
+  // 1k haiku input at 35 Wh/Mtok = 0.035 Wh; 2k opus output at 5756 Wh/Mtok = 11.512 Wh.
+  assert.ok(Math.abs(haiku.energyKwh * 1000 - 0.035) < 1e-9)
+  assert.ok(Math.abs(opus.energyKwh * 1000 - 11.512) < 1e-9)
 
   const total = sumEnergyKwh(breakdown)
-  const expectedTotal = expectedHaikuEnergy + expectedOpusEnergy
-  assert.ok(Math.abs(total - expectedTotal) < 1e-12)
-  // A large model must contribute far more per token than a small one.
-  assert.ok(opus.energyKwh > haiku.energyKwh * 5)
+  assert.ok(Math.abs(total - (haiku.energyKwh + opus.energyKwh)) < 1e-12)
 })
 
-test("computeModelEnergyBreakdown: includes cache read/write tokens", () => {
-  const tokensByModel = new Map<string, ModelTokens>([
-    [
-      "claude-sonnet-4-5", // medium: 0.000001 kWh/token
-      { input: 0, output: 0, reasoning: 0, cacheRead: 500, cacheWrite: 500 },
-    ],
-  ])
-  const [entry] = computeModelEnergyBreakdown(tokensByModel)
-  assert.equal(entry.tokens, 1000)
-  const expected = 1000 * 0.000001 * PUE
-  assert.ok(Math.abs(entry.energyKwh - expected) < 1e-12)
+test("computeModelEnergyBreakdown: golden vector for the agentic mix (sonnet)", () => {
+  const tokens: ModelTokens = { input: 21_000, output: 4_000, reasoning: 0, cacheRead: 975_000, cacheWrite: 0 }
+  const [entry] = computeModelEnergyBreakdown(new Map([["claude-sonnet-4-5", tokens]]), loadFactors())
+  const expectedWh = (21_000 * 136 + 975_000 * 136 * 0.08 + 4_000 * 2878) / 1e6
+  assert.ok(Math.abs(entry.energyKwh * 1000 - expectedWh) < 1e-9)
+  assert.equal(entry.tokens, 1_000_000)
+})
+
+test("computeModelEnergyBreakdown: cache reads bill at the reduced factor; tier fallback for unknown models", () => {
+  const cached: ModelTokens = { input: 0, output: 0, reasoning: 0, cacheRead: 1_000_000, cacheWrite: 0 }
+  const [entry] = computeModelEnergyBreakdown(new Map([["glm-5.3", cached]]), loadFactors())
+  // 1M cache reads at sonnet-class 136 Wh/Mtok * 0.08 = 10.88 Wh.
+  assert.ok(Math.abs(entry.energyKwh * 1000 - 136 * 0.08) < 1e-9)
+})
+
+test("computeModelEnergyBreakdown: reasoning tokens bill at the output factor", () => {
+  const tokens: ModelTokens = { input: 0, output: 0, reasoning: 1000, cacheRead: 0, cacheWrite: 0 }
+  const [entry] = computeModelEnergyBreakdown(new Map([["claude-sonnet-4-5", tokens]]), loadFactors())
+  assert.ok(Math.abs(entry.energyKwh * 1000 - (1000 * 2878) / 1e6) < 1e-12)
+})
+
+test("computeModelEnergyBreakdown: cacheReadFactor override moves only the cache term", () => {
+  const tokens: ModelTokens = { input: 100_000, output: 100_000, reasoning: 0, cacheRead: 100_000, cacheWrite: 0 }
+  const [atDefault] = computeModelEnergyBreakdown(new Map([["claude-sonnet-4-5", tokens]]), loadFactors())
+  const [atTiny] = computeModelEnergyBreakdown(new Map([["claude-sonnet-4-5", tokens]]), loadFactors(), 0.0001)
+  const moved = atDefault.energyKwh * 1000 - atTiny.energyKwh * 1000
+  assert.ok(Math.abs(moved - (100_000 * 136 * (0.08 - 0.0001)) / 1e6) < 1e-9)
 })
 
 test("computeModelEnergyBreakdown: empty map yields zero energy, no NaN", () => {
-  const breakdown = computeModelEnergyBreakdown(new Map())
+  const breakdown = computeModelEnergyBreakdown(new Map(), loadFactors())
   assert.equal(breakdown.length, 0)
   const total = sumEnergyKwh(breakdown)
   assert.equal(total, 0)
@@ -260,16 +271,17 @@ test("computeSessionCo2: derives grade/energy/co2 for a session's messages", () 
   const messages = [
     { role: "assistant", modelID: "claude-opus-4", tokens: { input: 2000, output: 1000 } },
   ]
-  const summary = computeSessionCo2(messages, 400)
+  const summary = computeSessionCo2(messages, 400, loadFactors())
   assert.equal(summary.messages, 1)
-  const expectedEnergyKwh = 3000 * 0.000003 * 1.1
-  assert.ok(Math.abs(summary.energyKwh - expectedEnergyKwh) < 1e-12)
-  assert.ok(Math.abs(summary.co2Grams - expectedEnergyKwh * 400) < 1e-9)
+  // opus family: 2000 input at 272 Wh/Mtok + 1000 output at 5756 Wh/Mtok.
+  const expectedWh = (2000 * 272 + 1000 * 5756) / 1e6
+  assert.ok(Math.abs(summary.energyKwh * 1000 - expectedWh) < 1e-9)
+  assert.ok(Math.abs(summary.co2Grams - summary.energyKwh * 400) < 1e-9)
   assert.equal(summary.grade, getEcoGrade(summary.co2Grams, 1).grade)
 })
 
 test("computeSessionCo2: no assistant messages yields zero footprint, no NaN", () => {
-  const summary = computeSessionCo2([], 400)
+  const summary = computeSessionCo2([], 400, loadFactors())
   assert.deepEqual(summary, { grade: "A+", co2Grams: 0, energyKwh: 0, messages: 0 })
 })
 
@@ -304,14 +316,23 @@ test("getGridIntensity: env override, rejects invalid values", () => {
   assert.equal(getGridIntensity({ OPENCODE_CO2_GRID_INTENSITY: "Infinity" }), 400)
 })
 
-test("computeEquivalents: LED bulb minutes depend on energy, not on grid intensity", () => {
+test("computeEquivalents: LED minutes depend on energy; phone charges and km on CO2", () => {
   const energyKwh = 0.01 // 10 Wh = one hour of a 10W bulb
   const at400 = computeEquivalents(energyKwh * 400, energyKwh)
   const at50 = computeEquivalents(energyKwh * 50, energyKwh)
   assert.ok(Math.abs(at400.ledBulbMinutes - 60) < 1e-9)
   assert.ok(Math.abs(at50.ledBulbMinutes - 60) < 1e-9)
   // CO2-denominated equivalents do scale with the grid.
-  assert.ok(Math.abs(at400.googleSearches / at50.googleSearches - 8) < 1e-9)
+  assert.ok(Math.abs(at400.phoneCharges / at50.phoneCharges - 8) < 1e-9)
+  assert.ok(Math.abs(at400.kmDriven / at50.kmDriven - 8) < 1e-9)
+})
+
+test("computeEquivalents: cited factors (EPA charge, GFEI world car), unsourced rows removed", () => {
+  const eq = computeEquivalents(8.7, 0.01)
+  assert.ok(Math.abs(eq.phoneCharges - 1) < 1e-9)
+  assert.ok(Math.abs(eq.kmDriven - 8.7 / 200) < 1e-9)
+  assert.ok(!("googleSearches" in eq))
+  assert.ok(!("videoStreamSeconds" in eq))
 })
 
 // ---------------------------------------------------------------------------
@@ -372,7 +393,7 @@ test("buildSessionStats: empty or malformed history yields zeros, no NaN", () =>
 })
 
 test("buildReportData + formatReport: consistent numbers across JSON and markdown", () => {
-  const data = buildReportData(buildSessionStats(history), 400)
+  const data = buildReportData(buildSessionStats(history), 400, loadFactors())
   assert.equal(data.totalTokens, 15450)
   assert.deepEqual(data.tokensByType, { input: 11000, output: 2950, reasoning: 500, cacheRead: 1000, cacheWrite: 0 })
   const report = formatReport(data)
@@ -574,4 +595,76 @@ test("the plugin package exposes server and tui parts, with no stray top-level p
   assert.deepEqual(entries, ["co2-footprint"])
   const pkg = JSON.parse(await readFile(path.join(pluginsDir, "co2-footprint", "package.json"), "utf8"))
   assert.deepEqual(pkg.exports, { ".": "./index.ts", "./tui": "./tui.tsx" })
+})
+
+// ---------------------------------------------------------------------------
+// factors.json + co2-factors: the editable energy factor table
+// ---------------------------------------------------------------------------
+
+test("loadFactors: returns the shipped factor table", () => {
+  const factors = loadFactors()
+  assert.equal(factors.version, 2)
+  assert.equal(factors.cacheReadFactor, 0.08)
+  assert.deepEqual(factors.families.sonnet, { input: 136, output: 2878 })
+  assert.deepEqual(factors.families.haiku, { input: 35, output: 722 })
+  assert.deepEqual(factors.families.opus, { input: 272, output: 5756 })
+  assert.deepEqual(factors.tiers, {
+    small: { input: 35, output: 722 },
+    medium: { input: 136, output: 2878 },
+    large: { input: 272, output: 5756 },
+  })
+})
+
+test("resolveModelFactors: known families, tier fallback for the rest", () => {
+  const factors = loadFactors()
+  const sonnet = resolveModelFactors("claude-sonnet-4-5", factors)
+  assert.equal(sonnet.source, "family")
+  assert.equal(sonnet.label, "sonnet")
+  assert.equal(sonnet.input, 136)
+  assert.equal(sonnet.output, 2878)
+
+  const opus = resolveModelFactors("anthropic/claude-opus-4-5-20251101", factors)
+  assert.equal(opus.source, "family")
+  assert.equal(opus.label, "opus")
+
+  const glm = resolveModelFactors("glm-5.3", factors)
+  assert.equal(glm.source, "tier")
+  assert.equal(glm.label, "medium")
+  assert.equal(glm.input, 136)
+
+  const unknown = resolveModelFactors("totally-unknown-model-xyz", factors)
+  assert.equal(unknown.source, "tier")
+  assert.equal(unknown.label, "medium")
+})
+
+test("getCacheReadFactor: env override, invalid values fall back to the file", () => {
+  assert.equal(getCacheReadFactor({ OPENCODE_CO2_CACHE_READ_FACTOR: "0.2" }), 0.2)
+  assert.equal(getCacheReadFactor({ OPENCODE_CO2_CACHE_READ_FACTOR: "abc" }), 0.08)
+  assert.equal(getCacheReadFactor({ OPENCODE_CO2_CACHE_READ_FACTOR: "0" }), 0.08)
+  assert.equal(getCacheReadFactor({ OPENCODE_CO2_CACHE_READ_FACTOR: "-1" }), 0.08)
+  assert.equal(getCacheReadFactor({}), 0.08)
+})
+
+test("loadFactors: throws on a malformed or incomplete factors file", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "co2-factors-"))
+  try {
+    const bad = path.join(dir, "factors.json")
+    await writeFile(bad, JSON.stringify({ version: 2, cacheReadFactor: -1, families: {}, tiers: {} }), "utf8")
+    assert.throws(() => loadFactors(bad))
+    await writeFile(bad, "{ not json", "utf8")
+    assert.throws(() => loadFactors(bad))
+    await writeFile(
+      bad,
+      JSON.stringify({ version: 2, cacheReadFactor: 0.08, families: { sonnet: { input: -1, output: 1 } }, tiers: {} }),
+      "utf8",
+    )
+    assert.throws(() => loadFactors(bad))
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test("lifetimeStorageKey: versioned with the factors version", () => {
+  assert.equal(lifetimeStorageKey(loadFactors()), "co2.lifetime.sessions.v2")
+  assert.notEqual(lifetimeStorageKey({ ...loadFactors(), version: 3 }), lifetimeStorageKey(loadFactors()))
 })
