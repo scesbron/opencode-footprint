@@ -48,6 +48,24 @@ edit the file to experiment. **Bump `version` when you change a factor** --
 the sidebar's all-time total is keyed by that version, so your accumulated
 grams never mix formulas.
 
+## Non-Anthropic models
+
+Jegham et al. covers 30 models from OpenAI, Anthropic, Meta and DeepSeek --
+no GLM or Moonshot/Kimi measurement exists. The `overrides` table in
+factors.json routes specific models to a family by extrapolation, with the
+list-price ratio as the corroborating proxy (the same proxy claude-carbon
+uses for its Fable factors):
+
+- `glm-5.3` -> sonnet factors; `glm-5.3-flash` -> haiku factors (its
+  `flash` marker already classified it as the small tier).
+- `kimi-k3.1-pro` and `kimi-k3.1-pro-highspeed` -> sonnet factors;
+  Moonshot's list price ($2/$10 per MTok) matches Sonnet's.
+
+Order-of-magnitude estimates at best: `-highspeed` is the same weights
+served faster, which likely burns *more* energy per token, not less, and no
+benchmark covers either family yet. Revisit when an energy benchmark covers
+them; until then the host family's uncertainty band applies.
+
 ## Cache-read factor
 
 Default **0.08**, published range **0.05-0.20** (override with

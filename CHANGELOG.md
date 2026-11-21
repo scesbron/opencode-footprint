@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The plugin ships as a single package directory (`.opencode/plugins/co2-footprint/`) that OpenCode 2 auto-discovers, loading the server and TUI parts together.
 - `METHODOLOGY.md`: the sourced chain behind every factor, with uncertainty bands and limits.
 - An editable `lib/factors.json`: the whole CO2 model in one file. `OPENCODE_CO2_CACHE_READ_FACTOR` overrides the cache-read factor.
+- GLM and Kimi model factors: `glm-5.3`, `glm-5.3-flash`, `kimi-k3.1-pro` and `kimi-k3.1-pro-highspeed` bill at sonnet/haiku-class factors through the `overrides` table in `factors.json` -- documented extrapolation, see METHODOLOGY.md.
 
 ### Changed
 
