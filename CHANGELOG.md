@@ -7,18 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- OpenCode 2 (V2 plugin API) support: the `co2_report` tool registers through `ctx.tool.transform`, reads the session's full history via `ctx.session.context`, and accepts the V2 `SessionMessageInfo` shape (`type`, `model.id`); the sidebar is a V2 TUI part that persists its all-time total through the plugin storage.
+- The plugin ships as a single package directory (`.opencode/plugins/co2-footprint/`) that OpenCode 2 auto-discovers, loading the server and TUI parts together.
+
 ### Changed
 
-- The `/co2` report (`co2_report` tool) is now computed from the session's full message history, read through the OpenCode SDK, instead of from events seen by the running process. Resumed sessions and sessions started before an OpenCode restart are now reported in full, and the report always matches the sidebar.
-- Report duration now spans the session's first message to its last activity (it used to start at the first event the running process saw).
-- `co2-tracker.ts` now uses OpenCode's V1 plugin module shape (`export default { id, server }`) and exports nothing else. The pure logic moved to `plugins/lib/co2-core.ts` and `plugins/lib/co2-report.ts`.
+- The sidebar panel appends beside the built-in sidebar footer instead of replacing it (V2 slots compose; the host footer content stays visible).
+- Minimum host version: OpenCode 2.0, tested with 2.3.1.
+- The `/co2` report (`co2_report` tool) is computed from the session's full message history, read through the host session API, instead of from events seen by the running process. Resumed sessions and sessions started before an OpenCode restart are now reported in full, and the report always matches the sidebar.
+- Report duration spans the session's first message to its last activity (it used to start at the first event the running process saw).
 - Token counts in the report are always formatted with `en-US` digit grouping, independent of the host locale.
-- Install flow: `INSTALL.md` now installs the latest tagged release (source archive of the tag) instead of downloading files from `main`, and takes dependency versions from that release's `.opencode/package.json`. Its shell snippet reports errors without exiting the agent's shell.
-- Documented a single minimum host version: OpenCode 1.18.0.
+- Install flow: `INSTALL.md` installs from this repository and takes dependency versions from its `.opencode/package.json`. Its shell snippet reports errors without exiting the agent's shell.
+
+### Removed
+
+- OpenCode 1 support: the V1 `server()` entrypoint, the `tui.json` registration file, and the `@opencode-ai/plugin` dependency.
 
 ### Fixed
 
-- The server plugin no longer logs "failed to load plugin" at startup: OpenCode's legacy loader called every exported helper (`classifyModel` and others) as a plugin.
 - Model classification matches whole id segments: the `mini` inside `gemini` no longer classifies Gemini Pro models as small, and provider-prefixed ids (`openai/o3-mini`, `anthropic/claude-opus-4-5`) are classified like bare ids.
 - Dated and suffixed OpenAI reasoning minis (`o3-mini-2025-01-31`, `o4-mini-high`) are classified medium like `o3-mini` and `o4-mini`, instead of small.
 - The "Minutes of a 10W LED bulb" equivalent is computed from energy, so it is now correct when `OPENCODE_CO2_GRID_INTENSITY` is set (it assumed 400 gCO2/kWh).
